@@ -1,7 +1,7 @@
 {
-  "name": "pigeonbot",
+  "name": "songguessbot",
   "version": "0.0.0",
-  "description": "ダーツのフィニッシュアレンジ等を案内するDiscord Bot「ぽっぽ」",
+  "description": "出題者が指定した曲を当てるゲーム「songGuessNK」",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
