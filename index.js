@@ -21,7 +21,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const OPEN_LOCK_MS = 5 * 60 * 1000; // open後の制限時間（5分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
 
-console.log("songGuess v0.0.0");
+console.log("songGuessNK v1.0.0");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
@@ -256,11 +256,14 @@ class Game {
     return this.chars.filter(c => !isSpace(c)).length;
   }
 
-  /** まだ開いていない文字数（スペース除く、同じ文字も1文字ずつ数える） */
   hiddenCount() {
     return this.chars.filter(
       c => !isSpace(c) && !this.opened.has(this.labels.get(normChar(c)))
     ).length;
+  }
+  
+  openedCount() {
+    return this.titleLength() - this.hiddenCount();
   }
 
   multiplier() {
@@ -337,6 +340,7 @@ async function startQuiz(interaction) {
           "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
           `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
           "・openした人は、他の人がopenするか5分経過するまで回答・openできません\n\n" +
+          "・正解が出ると出題者にも公開された文字数×ボーナス倍率、全文字が開くと文字数×ボーナス倍率×2の点数が入ります\n" +
           `出題者: ${interaction.user}`
       );
   await ch.send({ embeds: [embed] });
@@ -422,8 +426,14 @@ async function handleQuizMessage(message) {
     if (game.opened.size === game.labels.size) {
       games.delete(message.channel.id);
       await deleteGame(message.channel.id);
-      await message.reply(
-        `全ての文字が開きました。正解: **${game.answer}**（正解者なし）`
+    
+      // 出題者の得点 = 文字数 × ボーナス倍率 × 2
+      const hostPts = game.titleLength() * game.multiplier() * 2;
+      await addScore(message.guild.id, game.hostId, hostPts);
+    
+      await message.channel.send(
+        `全ての文字が開きました。正解は **${game.answer}** でした！（正解者なし）\n` +
+          `出題ポイント: @${game.hostId} **+${hostPts}pt**（${game.titleLength()}文字 × ${game.multiplier()}倍 × 2）`
       );
       return;
     }
@@ -444,13 +454,20 @@ async function handleQuizMessage(message) {
   if (normText(guess) === normText(game.answer)) {
     const pts = game.points();
     const detail = game.pointsDetail();
+    const hostPts = game.openedCount() * game.multiplier(); // 出題者の得点
     games.delete(message.channel.id); // 先に消して、同時に正解した別の人の二重加点を防ぐ
     await deleteGame(message.channel.id);
     await addScore(message.guild.id, message.author.id, pts);
+    if (hostPts > 0) {
+      await addScore(message.guild.id, game.hostId, hostPts);
+    }
     await message.react("⭕").catch(() => {});
     await message.reply(
       `Correct! ${message.author}` +
-        `獲得ポイント: **+${pts}pt**（${detail}）`
+        `獲得ポイント: **+${pts}pt**（${detail}）` +
+        (hostPts > 0
+          ? `\n出題ポイント: @${game.hostId} **+${hostPts}pt**（公開された${hostPts}文字分）`
+          : "")
     );
   } else {
     await message.react("❌").catch(() => {});
