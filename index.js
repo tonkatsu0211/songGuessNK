@@ -338,7 +338,7 @@ async function startQuiz(interaction) {
           `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
           "・openした人は、他の人がopenするか5分経過するまで回答・openできません"
       );
-  await ch.send(embed);
+  await ch.send({ embeds: [embed] });
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
