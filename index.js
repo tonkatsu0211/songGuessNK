@@ -320,14 +320,6 @@ async function startQuiz(interaction) {
   games.set(ch.id, game);
   await saveGame(ch.id, game);
 
-  // 曲名が漏れないよう、出題者への確認は ephemeral、問題文は別メッセージで投稿
-  await interaction.reply({
-    content:
-      `出題を受け付けました。答え: **${game.answer}**\n` +
-      "（出題者は `sg_` と `sg!open` を使えません）",
-    flags: MessageFlags.Ephemeral
-  });
-
   const bonus =
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
   await interaction.reply({
