@@ -330,13 +330,13 @@ async function startQuiz(interaction) {
 
   const bonus =
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
-  await interaction.reply(
-    `出題者: ${interaction.user}\n` +
-      `## ${game.render()}\n` +
-      "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン / `sg!leaderboard` でランキング\n" +
-      `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
-      "・openした人は、他の人がopenするか5分経過するまで回答・openできません"
-  );
+  await interaction.reply({
+    content: `出題者: ${interaction.user}\n` +
+               `## ${game.render()}\n` +
+               "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン / `sg!leaderboard` でランキング\n" +
+               `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
+               "・openした人は、他の人がopenするか5分経過するまで回答・openできません"
+  });
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
