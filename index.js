@@ -203,6 +203,7 @@ class Game {
     this.opened = new Set(); // オープン済みの番号
     this.lockUserId = null; // 直前にopenした人
     this.lockUntil = 0; // ロック解除時刻 (ms)
+    this.wrongCount = 0; // 不正解の回答の回数（出題者の得点に加算）
 
     for (const ch of this.chars) {
       if (isSpace(ch)) continue;
@@ -217,7 +218,8 @@ class Game {
       answer: this.answer,
       opened: [...this.opened],
       lockUserId: this.lockUserId,
-      lockUntil: this.lockUntil
+      lockUntil: this.lockUntil,
+      wrongCount: this.wrongCount
     };
   }
 
@@ -226,6 +228,7 @@ class Game {
     g.opened = new Set(d.opened);
     g.lockUserId = d.lockUserId;
     g.lockUntil = d.lockUntil;
+    g.wrongCount = d.wrongCount ?? 0; // 古い保存データには無いため
     return g;
   }
 
@@ -256,14 +259,9 @@ class Game {
     return this.chars.filter(c => !isSpace(c)).length;
   }
 
+  /** まだ開いていない文字の種類数（同じ文字は1つと数える） */
   hiddenCount() {
-    return this.chars.filter(
-      c => !isSpace(c) && !this.opened.has(this.labels.get(normChar(c)))
-    ).length;
-  }
-  
-  openedCount() {
-    return this.titleLength() - this.hiddenCount();
+    return this.labels.size - this.opened.size;
   }
 
   multiplier() {
@@ -277,8 +275,22 @@ class Game {
   pointsDetail() {
     const m = this.multiplier();
     return m > 1
-      ? `${this.hiddenCount()}文字 × ボーナス${m}倍`
-      : `${this.hiddenCount()}文字`;
+      ? `${this.hiddenCount()}種類 × ボーナス${m}倍`
+      : `${this.hiddenCount()}種類`;
+  }
+
+  /** 開いた文字の種類数（同じ文字は1つと数える = sg!open された回数） */
+  openedCount() {
+    return this.opened.size;
+  }
+
+  /** 出題者の得点 = 開いた文字数（種類） + 不正解数 */
+  hostPoints() {
+    return this.openedCount() + this.wrongCount;
+  }
+
+  hostPointsDetail() {
+    return `開いた文字${this.openedCount()}種類 + 不正解${this.wrongCount}回`;
   }
 }
 
@@ -320,16 +332,22 @@ async function startQuiz(interaction) {
   }
 
   const game = new Game(interaction.user.id, songname);
-  games.set(ch.id, game);
-  await saveGame(ch.id, game);
+  games.set(ch.id, game); // 先に登録して、同時に2回出題されるのを防ぐ
 
   // 曲名が漏れないよう、出題者への確認は ephemeral、問題文は別メッセージで投稿
-  await interaction.reply({
-    content:
-      `出題を受け付けました。答え: **${game.answer}**\n` +
-      "（出題者は `sg_` と `sg!open` を使えません）",
-    flags: MessageFlags.Ephemeral
-  });
+  // （3秒以内に返信する必要があるため、DB保存より先に行う）
+  try {
+    await interaction.reply({
+      content:
+        `出題を受け付けました。答え: **${game.answer}**\n` +
+        "（出題者は `sg_` と `sg!open` を使えません）",
+      flags: MessageFlags.Ephemeral
+    });
+  } catch (error) {
+    games.delete(ch.id);
+    console.error("quiz reply failed:", error);
+    return;
+  }
 
   const bonus =
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
@@ -338,12 +356,28 @@ async function startQuiz(interaction) {
       .setDescription(
         `# ${game.render()}\n` +
           "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
-          `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
+          `・正解時の得点 = 開いていない文字種の数（現在 **${game.hiddenCount()}** 種類）${bonus}\n` +
           "・openした人は、他の人がopenするか5分経過するまで回答・openできません\n\n" +
-          "・正解が出るまたは全文字が開くと出題者にも公開された文字数+不正解数の点数が入ります\n" +
+          "・正解が出るまたは全文字が開くと出題者にも開いた文字種の数+不正解数の点数が入ります\n" +
           `出題者: ${interaction.user}`
       );
-  await ch.send({ embeds: [embed] });
+
+  try {
+    await ch.send({ embeds: [embed] });
+  } catch (error) {
+    games.delete(ch.id); // 投稿できなかった場合は、出題を取り消す
+    console.error("quiz send failed:", error);
+    await interaction
+      .followUp({
+        content:
+          "問題の投稿に失敗しました。botに、このチャンネルでの「メッセージを送信」と「埋め込みリンク」の権限があるか確認してください。",
+        flags: MessageFlags.Ephemeral
+      })
+      .catch(() => {});
+    return;
+  }
+
+  await saveGame(ch.id, game);
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
@@ -426,13 +460,13 @@ async function handleQuizMessage(message) {
     if (game.opened.size === game.labels.size) {
       games.delete(message.channel.id);
       await deleteGame(message.channel.id);
-      
-      const hostPts = game.titleLength() * game.multiplier() * 2;
+
+      const hostPts = game.hostPoints(); // 出題者の得点（開いた文字数 + 不正解数）
       await addScore(message.guild.id, game.hostId, hostPts);
-    
+
       await message.channel.send(
-        `全ての文字が開きました。正解は **${game.answer}** でした！（正解者なし）\n` +
-          `出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.titleLength()}文字 × ${game.multiplier()}倍 × 2）`
+        `全ての文字が開きました。正解は: **${game.answer}**（正解者なし）\n` +
+          `出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.hostPointsDetail()}）`
       );
       return;
     }
@@ -453,7 +487,7 @@ async function handleQuizMessage(message) {
   if (normText(guess) === normText(game.answer)) {
     const pts = game.points();
     const detail = game.pointsDetail();
-    const hostPts = game.openedCount() * game.multiplier(); // 出題者の得点
+    const hostPts = game.hostPoints(); // 出題者の得点（開いた文字数 + 不正解数）
     games.delete(message.channel.id); // 先に消して、同時に正解した別の人の二重加点を防ぐ
     await deleteGame(message.channel.id);
     await addScore(message.guild.id, message.author.id, pts);
@@ -462,13 +496,18 @@ async function handleQuizMessage(message) {
     }
     await message.react("⭕").catch(() => {});
     await message.reply(
-      `Correct! ${message.author}` +
+      `Correct! ${message.author}\n` +
         `獲得ポイント: **+${pts}pt**（${detail}）` +
         (hostPts > 0
-          ? `\n出題ポイント: <@${game.hostId}> **+${hostPts}pt**（公開された${hostPts}文字分）`
+          ? `\n出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.hostPointsDetail()}）`
           : "")
     );
   } else {
+    game.wrongCount++;
+    // 同時に正解が出てクイズが終わっていたら、保存し直さない
+    if (games.get(message.channel.id) === game) {
+      await saveGame(message.channel.id, game);
+    }
     await message.react("❌").catch(() => {});
   }
 }
