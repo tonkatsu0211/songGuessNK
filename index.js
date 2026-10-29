@@ -494,7 +494,7 @@ async function handleQuizMessage(message) {
     if (hostPts > 0) {
       await addScore(message.guild.id, game.hostId, hostPts);
     }
-    await message.react("⭕").catch(() => {});
+    await message.react("<:pigeon_af:1565513151636836362>").catch(() => {});
     await message.reply(
       `Correct! ${message.author}\n` +
         `獲得ポイント: **+${pts}pt**（${detail}）` +
@@ -508,7 +508,7 @@ async function handleQuizMessage(message) {
     if (games.get(message.channel.id) === game) {
       await saveGame(message.channel.id, game);
     }
-    await message.react("❌").catch(() => {});
+    await message.react("<:uyuyu:1565513010422751302>").catch(() => {});
   }
 }
 
