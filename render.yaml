@@ -1,14 +1,14 @@
 services:
   - type: worker
-    name: song-quiz-bot
+    name: songguessnk
     runtime: node
     plan: starter
     buildCommand: npm install
-    startCommand: node bot.js
+    startCommand: npm start
     envVars:
       - key: DISCORD_TOKEN
-        sync: false # ダッシュボードで値を入力
+        sync: false
       - key: DATABASE_URL
-        sync: false # PostgreSQLの接続URLをダッシュボードで入力
+        sync: false
       - key: NODE_VERSION
         value: 20
