@@ -1,6 +1,5 @@
 services:
-  - type: worker
-    name: songguessnk
+  - name: songguessnk
     runtime: node
     plan: starter
     buildCommand: npm install
