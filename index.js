@@ -320,15 +320,23 @@ async function startQuiz(interaction) {
   games.set(ch.id, game);
   await saveGame(ch.id, game);
 
+  // 曲名が漏れないよう、出題者への確認は ephemeral、問題文は別メッセージで投稿
+  await interaction.reply({
+    content:
+      `出題を受け付けました。答え: **${game.answer}**\n` +
+      "（出題者は `sg_` と `sg!open` を使えません）",
+    flags: MessageFlags.Ephemeral
+  });
+
   const bonus =
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
-  await interaction.reply({
-    content: `出題者: ${interaction.user}\n` +
-               `## ${game.render()}\n` +
-               "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
-               `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
-               "・openした人は、他の人がopenするか5分経過するまで回答・openできません"
-  });
+  await ch.send(
+    `## ${game.render()}\n` +
+      `出題者: ${interaction.user}\n` +
+      "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
+      `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
+      "・openした人は、他の人がopenするか5分経過するまで回答・openできません"
+  );
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
