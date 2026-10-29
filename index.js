@@ -340,7 +340,7 @@ async function startQuiz(interaction) {
           "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
           `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
           "・openした人は、他の人がopenするか5分経過するまで回答・openできません\n\n" +
-          "・正解が出ると出題者にも公開された文字数×ボーナス倍率、全文字が開くと文字数×ボーナス倍率×2の点数が入ります\n" +
+          "・正解が出るまたは全文字が開くと出題者にも公開された文字数+不正解数の点数が入ります\n" +
           `出題者: ${interaction.user}`
       );
   await ch.send({ embeds: [embed] });
@@ -426,8 +426,7 @@ async function handleQuizMessage(message) {
     if (game.opened.size === game.labels.size) {
       games.delete(message.channel.id);
       await deleteGame(message.channel.id);
-    
-      // 出題者の得点 = 文字数 × ボーナス倍率 × 2
+      
       const hostPts = game.titleLength() * game.multiplier() * 2;
       await addScore(message.guild.id, game.hostId, hostPts);
     
