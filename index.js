@@ -332,7 +332,6 @@ async function startQuiz(interaction) {
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
   const embed = new EmbedBuilder()
       .setColor("#673bb7")
-      .addFields({
       .setTitle(`## ${game.render()}`)
       .setDescription(
         "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
