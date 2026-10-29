@@ -18,7 +18,7 @@ const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-const OPEN_LOCK_MS = 5 * 60 * 1000; // open後の制限時間（5分）
+const OPEN_LOCK_MS = 2 * 60 * 1000; // open後の制限時間（5分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
 
 console.log("songGuessNK v1.0.0");
@@ -242,7 +242,7 @@ class Game {
       .join("");
   }
 
-  // --- ロック（openした人は、他の人がopenするか5分経過するまで回答/open不可） ---
+  // --- ロック（openした人は、他の人がopenするか2分経過するまで回答/open不可） ---
   lockRemaining(userId) {
     if (this.lockUserId !== userId) return 0;
     const left = this.lockUntil - Date.now();
@@ -357,7 +357,7 @@ async function startQuiz(interaction) {
         `# ${game.render()}\n` +
           "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
           `・正解時の得点 = 開いていない文字種の数（現在 **${game.hiddenCount()}** 種類）${bonus}\n` +
-          "・openした人は、他の人がopenするか5分経過するまで回答・openできません\n\n" +
+          "・openした人は、他の人がopenするか2分経過するまで回答・openできません\n\n" +
           "・正解が出るまたは全文字が開くと出題者にも開いた文字種の数+不正解数の点数が入ります\n" +
           `出題者: ${interaction.user}`
       );
@@ -424,7 +424,7 @@ async function handleQuizMessage(message) {
     return;
   }
 
-  // 直前にopenした人は、他の人がopenするか5分経過するまで回答・open不可
+  // 直前にopenした人は、他の人がopenするか2分経過するまで回答・open不可
   const remain = game.lockRemaining(message.author.id);
   if (remain > 0) {
     const m = Math.floor(remain / 60);
@@ -473,7 +473,7 @@ async function handleQuizMessage(message) {
 
     await saveGame(message.channel.id, game);
     await message.reply(
-      `open: ${circled(n)}（${message.author} は5分間 or 他の人がopenするまで回答・open不可）\n` +
+      `open: ${circled(n)}（${message.author} は2分間 or 他の人がopenするまで回答・open不可）\n` +
         `## ${game.render()}\n` +
         `現在の正解得点: **${game.points()}pt**（${game.pointsDetail()}）`
     );
