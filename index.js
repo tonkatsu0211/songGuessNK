@@ -433,7 +433,7 @@ async function handleQuizMessage(message) {
     
       await message.channel.send(
         `全ての文字が開きました。正解は **${game.answer}** でした！（正解者なし）\n` +
-          `出題ポイント: @${game.hostId} **+${hostPts}pt**（${game.titleLength()}文字 × ${game.multiplier()}倍 × 2）`
+          `出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.titleLength()}文字 × ${game.multiplier()}倍 × 2）`
       );
       return;
     }
@@ -466,7 +466,7 @@ async function handleQuizMessage(message) {
       `Correct! ${message.author}` +
         `獲得ポイント: **+${pts}pt**（${detail}）` +
         (hostPts > 0
-          ? `\n出題ポイント: @${game.hostId} **+${hostPts}pt**（公開された${hostPts}文字分）`
+          ? `\n出題ポイント: <@${game.hostId}> **+${hostPts}pt**（公開された${hostPts}文字分）`
           : "")
     );
   } else {
