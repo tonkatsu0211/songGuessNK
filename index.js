@@ -337,8 +337,8 @@ async function startQuiz(interaction) {
           "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
           `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
           "・openした人は、他の人がopenするか5分経過するまで回答・openできません"
-      )
-      .setFooter({ text: `出題者: ${interaction.user.displayName}` });
+          `出題者: ${interaction.user}`
+      );
   await ch.send({ embeds: [embed] });
 }
 
