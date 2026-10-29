@@ -1,7 +1,7 @@
 {
   "name": "songguessnk",
-  "version": "0.0.0",
-  "description": "出題者が指定した曲を当てるゲーム「songGuessNK」",
+  "version": "1.0.0",
+  "description": "出題者が指定した曲を当てるゲームのbot「songGuessNK」",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
