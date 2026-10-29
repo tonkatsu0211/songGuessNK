@@ -331,7 +331,7 @@ async function startQuiz(interaction) {
   const bonus =
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
   await ch.send(
-    `🎵 **曲名クイズ開始！** 出題者: ${interaction.user}\n` +
+    `出題者: ${interaction.user}\n` +
       `## ${game.render()}\n` +
       "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン / `sg!leaderboard` でランキング\n" +
       `・正解時の得点 = 開いていない文字数（現在 **${game.hiddenCount()}** 文字）${bonus}\n` +
@@ -355,7 +355,7 @@ async function handleQuizMessage(message) {
     );
     const embed = new EmbedBuilder()
       .setColor(0x00aaff)
-      .setTitle("🏆 ランキング")
+      .setTitle("ランキング")
       .setDescription(lines.join("\n"));
     await message.channel.send({ embeds: [embed] });
     return;
@@ -445,8 +445,8 @@ async function handleQuizMessage(message) {
     await deleteGame(message.channel.id);
     await addScore(message.guild.id, message.author.id, pts);
     await message.react("⭕").catch(() => {});
-    await message.channel.send(
-      `🎉 正解！ ${message.author} さん、正解は **${game.answer}** です！\n` +
+    await message.reply(
+      `Correct! ${message.author}` +
         `獲得ポイント: **+${pts}pt**（${detail}）`
     );
   } else {
@@ -473,12 +473,8 @@ client.on("interactionCreate", async interaction => {
       .addFields(
         {
           name: "コマンド一覧",
-          value: "ぬるぽ",
-          inline: false
-        },
-        {
-          name: "曲名クイズ",
-          value:
+          value: "\`/ping\` botの応答速度を計測します。\n" +
+            "\`/help\` コマンド一覧を表示します。\n" + 
             "`/quiz songname` クイズを開始（出題者用）\n" +
             "`sg_答え` 答えを回答する\n" +
             "`sg!open n` n番の文字をオープンする\n" +
