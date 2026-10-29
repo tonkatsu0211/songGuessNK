@@ -357,7 +357,7 @@ async function handleQuizMessage(message) {
       .setColor(0x00aaff)
       .setTitle("ランキング")
       .setDescription(lines.join("\n"));
-    await message.channel.send({ embeds: [embed] });
+    await message.reply({ embeds: [embed] });
     return;
   }
 
@@ -367,7 +367,7 @@ async function handleQuizMessage(message) {
 
   const game = games.get(message.channel.id);
   if (!game) {
-    await message.channel.send(
+    await message.reply(
       "進行中のクイズはありません。`/quiz` で開始できます。"
     );
     return;
@@ -419,15 +419,15 @@ async function handleQuizMessage(message) {
     if (game.opened.size === game.labels.size) {
       games.delete(message.channel.id);
       await deleteGame(message.channel.id);
-      await message.channel.send(
-        `全ての文字が開きました。正解は **${game.answer}** でした！（正解者なし）`
+      await message.reply(
+        `全ての文字が開きました。正解: **${game.answer}**（正解者なし）`
       );
       return;
     }
 
     await saveGame(message.channel.id, game);
-    await message.channel.send(
-      `${circled(n)} をオープン！（${message.author} は5分間 or 他の人がopenするまで回答・open不可）\n` +
+    await message.reply(
+      `open: ${circled(n)}（${message.author} は5分間 or 他の人がopenするまで回答・open不可）\n` +
         `## ${game.render()}\n` +
         `現在の正解得点: **${game.points()}pt**（${game.pointsDetail()}）`
     );
