@@ -1,4 +1,4 @@
-//require("./server");
+require("./server");
 
 const { Pool } = require("pg");
 const {
