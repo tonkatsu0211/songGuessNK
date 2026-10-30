@@ -18,7 +18,7 @@ const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-const OPEN_LOCK_MS = 2 * 60 * 1000; // open後の制限時間（5分）
+const OPEN_LOCK_MS = 2 * 60 * 1000; // open後の制限時間（2分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
 
 console.log("songGuessNK v1.0.0");
@@ -413,6 +413,23 @@ async function handleQuizMessage(message) {
     );
     return;
   }
+
+  if (content === "sg!fuck") {
+    await message.react("<:crying_uyuyu:1565519672864932021>").catch(() => {});
+    return;
+  }
+  
+    const isAnswer = content.startsWith("sg_");
+    const isOpen = content === "sg!open" || content.startsWith("sg!open ");
+    if (!isAnswer && !isOpen) return;
+  
+    const game = games.get(message.channel.id);
+    if (!game) {
+      await message.reply(
+        "進行中のクイズはありません。`/quiz` で開始できます。"
+      );
+      return;
+    }
 
   // 出題者は sg_ / sg!open 禁止
   if (message.author.id === game.hostId) {
