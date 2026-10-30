@@ -392,7 +392,7 @@ async function handleQuizMessage(message) {
       return;
     }
     const lines = top.map(
-      (r, i) => `**${i + 1}位** <@${r.user_id}> — ${r.points}pt`
+      (r, i) => `**${i + 1}位** <@${r.user_id}> — ` + (r.points == 1 ? `${r.points}pt` : `${r.points}pts`)
     );
     const embed = new EmbedBuilder()
       .setColor(0x00aaff)
