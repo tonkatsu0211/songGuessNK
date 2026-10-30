@@ -402,6 +402,11 @@ async function handleQuizMessage(message) {
     return;
   }
 
+  if (content === "sg!fuck") {
+    await message.react("<:crying_uyuyu:1565519672864932021>").catch(() => {});
+    return;
+  }
+
   const isAnswer = content.startsWith("sg_");
   const isOpen = content === "sg!open" || content.startsWith("sg!open ");
   if (!isAnswer && !isOpen) return;
@@ -413,23 +418,6 @@ async function handleQuizMessage(message) {
     );
     return;
   }
-
-  if (content === "sg!fuck") {
-    await message.react("<:crying_uyuyu:1565519672864932021>").catch(() => {});
-    return;
-  }
-  
-    const isAnswer = content.startsWith("sg_");
-    const isOpen = content === "sg!open" || content.startsWith("sg!open ");
-    if (!isAnswer && !isOpen) return;
-  
-    const game = games.get(message.channel.id);
-    if (!game) {
-      await message.reply(
-        "進行中のクイズはありません。`/quiz` で開始できます。"
-      );
-      return;
-    }
 
   // 出題者は sg_ / sg!open 禁止
   if (message.author.id === game.hostId) {
