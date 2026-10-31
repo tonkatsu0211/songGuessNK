@@ -358,7 +358,7 @@ async function startQuiz(interaction) {
           "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
           `・正解時の得点 = 開いていない文字種の数（現在 **${game.hiddenCount()}** 種類）${bonus}\n` +
           "・openした人は、他の人がopenするか2分経過するまで回答・openできません\n\n" +
-          "・正解が出るまたは全文字が開くと出題者にも開いた文字種の数+不正解数の点数が入ります\n" +
+          "・正解が出ると出題者にも開いた文字種の数+不正解数の点数が、全文字が開くとその1.5倍(切り捨て)の点数が入ります\n" +
           `出題者: ${interaction.user}`
       );
 
@@ -466,7 +466,7 @@ async function handleQuizMessage(message) {
       games.delete(message.channel.id);
       await deleteGame(message.channel.id);
 
-      const hostPts = game.hostPoints(); // 出題者の得点（開いた文字数 + 不正解数）
+      const hostPts = Math.floor(game.hostPoints() * 1.5); // 出題者の得点（開いた文字数 + 不正解数）
       await addScore(message.guild.id, game.hostId, hostPts);
 
       await message.channel.send(
