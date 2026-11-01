@@ -64,7 +64,6 @@ const ping = new SlashCommandBuilder()
     InteractionContextType.PrivateChannel
   );
 
-// クイズはチャンネルへの投稿・メッセージ監視が必要なため、サーバー専用
 const quiz = new SlashCommandBuilder()
   .setName("quiz")
   .setDescription("曲名クイズを開始します")
