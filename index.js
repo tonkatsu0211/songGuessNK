@@ -20,8 +20,9 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 const OPEN_LOCK_MS = 1 * 60 * 1000; // open後の制限時間（1分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
+const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の得点から引くポイント。0未満にはならない）
 
-console.log("songGuessNK v1.1.0");
+console.log("songGuessNK v1.2.0");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
@@ -76,10 +77,17 @@ const quiz = new SlashCommandBuilder()
   .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
   .setContexts(InteractionContextType.Guild);
 
+// 出題者専用の強制終了コマンド（ペナルティあり）
+const quizend = new SlashCommandBuilder()
+  .setName("quizend")
+  .setDescription("出題中のクイズを強制終了します（出題者専用・ペナルティあり）")
+  .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
+  .setContexts(InteractionContextType.Guild);
+
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 async function registerCommands() {
-  const body = [help.toJSON(), ping.toJSON(), quiz.toJSON()];
+  const body = [help.toJSON(), ping.toJSON(), quiz.toJSON(), quizend.toJSON()];
 
   if (GUILD_ID) {
     await rest.put(
@@ -126,6 +134,12 @@ async function initDb() {
       channel_id TEXT PRIMARY KEY,
       data       JSONB NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS used_songs (
+      guild_id   TEXT NOT NULL,
+      song_key   TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (guild_id, song_key)
+    );
   `);
 }
 
@@ -166,6 +180,39 @@ async function deleteGame(channelId) {
   } catch (e) {
     console.error("deleteGame failed:", e);
   }
+}
+
+// 出題済みの曲名を登録する。すでに登録されていれば false（重複）を返す。
+// 判定と登録を1回のクエリで行うので、同時に同じ曲名が出題されても、片方だけが通る。
+async function claimSong(guildId, songKey) {
+  const { rowCount } = await pool.query(
+    `INSERT INTO used_songs (guild_id, song_key) VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`,
+    [guildId, songKey]
+  );
+  return rowCount === 1;
+}
+
+// 出題済みの登録を消す（強制終了・投稿失敗のとき）。失敗してもbotは止めない。
+async function releaseSong(guildId, songKey) {
+  try {
+    await pool.query(
+      "DELETE FROM used_songs WHERE guild_id = $1 AND song_key = $2",
+      [guildId, songKey]
+    );
+  } catch (e) {
+    console.error("releaseSong failed:", e);
+  }
+}
+
+// 得点を引く（0未満にはならない）
+async function subtractScore(guildId, userId, points) {
+  await pool.query(
+    `INSERT INTO scores (guild_id, user_id, points) VALUES ($1, $2, 0)
+     ON CONFLICT (guild_id, user_id)
+     DO UPDATE SET points = GREATEST(scores.points - $3::int, 0)`,
+    [guildId, userId, points]
+  );
 }
 
 async function loadGames() {
@@ -229,6 +276,11 @@ class Game {
     g.lockUntil = d.lockUntil;
     g.wrongCount = d.wrongCount ?? 0; // 古い保存データには無いため
     return g;
+  }
+
+  /** 重複出題の判定に使うキー（大文字小文字・全角半角・スペースの違いをなくしたもの） */
+  songKey() {
+    return normText(this.answer);
   }
 
   render() {
@@ -305,48 +357,63 @@ async function replyTemp(message, text, ms = 8000) {
 async function startQuiz(interaction) {
   const ch = interaction.channel;
 
+  // DBへの問い合わせで3秒を超えても失敗しないよう、先に「処理中」にしてから editReply で返信する。
+  // 出題者にだけ見える形にして、曲名が他の人に見えないようにする。
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   if (!interaction.inGuild() || !ch) {
-    await interaction.reply({
-      content: "このコマンドはbotが参加しているサーバーのチャンネルで使用してください。",
-      flags: MessageFlags.Ephemeral
+    await interaction.editReply({
+      content: "このコマンドはbotが参加しているサーバーのチャンネルで使用してください。"
     });
     return;
   }
 
   if (games.has(ch.id)) {
-    await interaction.reply({
-      content: "このチャンネルではすでにクイズが進行中です。",
-      flags: MessageFlags.Ephemeral
+    await interaction.editReply({
+      content: "このチャンネルではすでにクイズが進行中です。"
     });
     return;
   }
 
   const songname = interaction.options.getString("songname").trim();
   if (!songname) {
-    await interaction.reply({
-      content: "曲名を入力してください。",
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.editReply({ content: "曲名を入力してください。" });
     return;
   }
 
   const game = new Game(interaction.user.id, songname);
-  games.set(ch.id, game); // 先に登録して、同時に2回出題されるのを防ぐ
+  const guildId = interaction.guildId;
 
-  // 曲名が漏れないよう、出題者への確認は ephemeral、問題文は別メッセージで投稿
-  // （3秒以内に返信する必要があるため、DB保存より先に行う）
+  // 同じ曲名がすでに出題されていたら弾く（判定と登録を同時に行う）
+  let claimed;
   try {
-    await interaction.reply({
-      content:
-        `出題を受け付けました。答え: **${game.answer}**\n` +
-        "（出題者は `sg_` と `sg!open` を使えません）",
-      flags: MessageFlags.Ephemeral
-    });
+    claimed = await claimSong(guildId, game.songKey());
   } catch (error) {
-    games.delete(ch.id);
-    console.error("quiz reply failed:", error);
+    console.error("claimSong failed:", error);
+    await interaction.editReply({
+      content: "データベースの処理に失敗しました。しばらくしてから、もう一度お試しください。"
+    });
     return;
   }
+
+  if (!claimed) {
+    await interaction.editReply({
+      content:
+        "この曲名は、このサーバーですでに出題されています。別の曲名で出題してください。"
+    });
+    return;
+  }
+
+  // 登録の待ち時間の間に、同じチャンネルで別の出題が始まっていないか、もう一度確認する
+  if (games.has(ch.id)) {
+    await releaseSong(guildId, game.songKey());
+    await interaction.editReply({
+      content: "このチャンネルではすでにクイズが進行中です。"
+    });
+    return;
+  }
+
+  games.set(ch.id, game); // 先に登録して、同時に2回出題されるのを防ぐ
 
   const bonus =
     game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
@@ -365,18 +432,77 @@ async function startQuiz(interaction) {
     await ch.send({ embeds: [embed] });
   } catch (error) {
     games.delete(ch.id); // 投稿できなかった場合は、出題を取り消す
+    await releaseSong(guildId, game.songKey()); // 出題していないので、曲名の登録も消す
     console.error("quiz send failed:", error);
     await interaction
-      .followUp({
+      .editReply({
         content:
-          "問題の投稿に失敗しました。botに、このチャンネルでの「メッセージを送信」と「埋め込みリンク」の権限があるか確認してください。",
-        flags: MessageFlags.Ephemeral
+          "問題の投稿に失敗しました。botに、このチャンネルでの「メッセージを送信」と「埋め込みリンク」の権限があるか確認してください。"
       })
       .catch(() => {});
     return;
   }
 
+  await interaction
+    .editReply({
+      content:
+        `出題を受け付けました。答え: **${game.answer}**\n` +
+        "（出題者は `sg_` と `sg!open` を使えません）\n" +
+        `（強制終了は \`/quizend\`。出題者の得点から ${FORCE_END_PENALTY}pt 引かれます）`
+    })
+    .catch(() => {});
+
   await saveGame(ch.id, game);
+}
+
+// ---------- /quizend（出題者専用・ペナルティあり） ----------
+async function endQuiz(interaction) {
+  const ch = interaction.channel;
+
+  if (!interaction.inGuild() || !ch) {
+    await interaction.reply({
+      content: "このコマンドはbotが参加しているサーバーのチャンネルで使用してください。",
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const game = games.get(ch.id);
+  if (!game) {
+    await interaction.reply({
+      content: "このチャンネルで進行中のクイズはありません。",
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (interaction.user.id !== game.hostId) {
+    await interaction.reply({
+      content: "クイズを強制終了できるのは、出題者だけです。",
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  // 先に消して、同時に届いた回答・open・正解の処理と、二重にならないようにする
+  games.delete(ch.id);
+
+  await interaction.deferReply();
+
+  try {
+    await deleteGame(ch.id);
+    // 強制終了した問題は、再び出題できるように、出題済みの登録を消す
+    await releaseSong(interaction.guildId, game.songKey());
+    await subtractScore(interaction.guildId, game.hostId, FORCE_END_PENALTY);
+  } catch (error) {
+    console.error("endQuiz failed:", error);
+  }
+
+  await interaction.editReply(
+    `⚠️ 出題者の ${interaction.user} がクイズを強制終了しました。\n` +
+      `正解は **${game.answer}** でした。\n` +
+      `ペナルティ: 出題者の得点から **-${FORCE_END_PENALTY}pt**（0未満にはなりません）`
+  );
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
@@ -538,6 +664,7 @@ client.on("interactionCreate", async interaction => {
           value: "\`/ping\` botの応答速度を計測します。\n" +
             "\`/help\` コマンド一覧を表示します。\n" + 
             "`/quiz songname` クイズを開始（出題者用）\n" +
+            "`/quizend` クイズを強制終了（出題者用・ペナルティあり）\n" +
             "`sg_答え` 答えを回答する\n" +
             "`sg!open n` n番の文字をオープンする\n" +
             "`sg!leaderboard` ランキングを表示",
@@ -556,6 +683,8 @@ client.on("interactionCreate", async interaction => {
     });
   } else if (interaction.commandName === "quiz") {
     await startQuiz(interaction);
+  } else if (interaction.commandName === "quizend") {
+    await endQuiz(interaction);
   } else {
     return;
   }
