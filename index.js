@@ -1,5 +1,3 @@
-//require("./server");
-
 const { Pool } = require("pg");
 const {
   Client,
@@ -22,7 +20,7 @@ const OPEN_LOCK_MS = 1 * 60 * 1000; // open後の制限時間（1分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
 const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の得点から引くポイント。0未満にはならない）
 
-console.log("songGuessNK v1.2.1");
+console.log("songGuessNK v1.2.2");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
