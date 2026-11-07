@@ -1,4 +1,5 @@
 const { Pool } = require("pg");
+const { randomUUID } = require("crypto");
 const {
   Client,
   GatewayIntentBits,
@@ -19,6 +20,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const OPEN_LOCK_MS = 1 * 60 * 1000; // open後の制限時間（1分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
 const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の得点から引くポイント。0未満にはならない）
+const MAX_QUEUE_PER_CHANNEL = 10; // 1チャンネルあたりの、順番待ちの最大数
 
 console.log("songGuessNK v1.2.2");
 
@@ -68,7 +70,7 @@ const quiz = new SlashCommandBuilder()
   .setDescription("曲名クイズを開始します")
   .addStringOption(option =>
     option
-      .setName("songname")
+      .setName("answer")
       .setDescription("出題する曲名")
       .setRequired(true)
   )
@@ -137,6 +139,14 @@ async function initDb() {
       song_key   TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (guild_id, song_key)
+    );
+    CREATE TABLE IF NOT EXISTS quiz_queue (
+      id         TEXT PRIMARY KEY,
+      guild_id   TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      host_id    TEXT NOT NULL,
+      answer     TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
 }
@@ -213,12 +223,51 @@ async function subtractScore(guildId, userId, points) {
   );
 }
 
+// 順番待ちのクイズの保存（再起動しても残るように）。失敗してもbotは止めない。
+async function addQueuedDb(item) {
+  try {
+    await pool.query(
+      `INSERT INTO quiz_queue (id, guild_id, channel_id, host_id, answer)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [item.id, item.guildId, item.channelId, item.hostId, item.answer]
+    );
+  } catch (e) {
+    console.error("addQueuedDb failed:", e);
+  }
+}
+
+async function removeQueuedDb(id) {
+  try {
+    await pool.query("DELETE FROM quiz_queue WHERE id = $1", [id]);
+  } catch (e) {
+    console.error("removeQueuedDb failed:", e);
+  }
+}
+
 async function loadGames() {
   const { rows } = await pool.query("SELECT channel_id, data FROM games");
   for (const r of rows) {
     games.set(r.channel_id, Game.fromJSON(r.data));
   }
   console.log(`進行中のクイズを ${rows.length} 件復元しました。`);
+
+  const queued = await pool.query(
+    `SELECT id, guild_id, channel_id, host_id, answer
+     FROM quiz_queue ORDER BY created_at, id`
+  );
+  for (const r of queued.rows) {
+    if (!queues.has(r.channel_id)) {
+      queues.set(r.channel_id, []);
+    }
+    queues.get(r.channel_id).push({
+      id: r.id,
+      guildId: r.guild_id,
+      channelId: r.channel_id,
+      hostId: r.host_id,
+      answer: r.answer
+    });
+  }
+  console.log(`順番待ちのクイズを ${queued.rows.length} 件復元しました。`);
 }
 
 // ---------- クイズ用ユーティリティ ----------
@@ -346,9 +395,67 @@ class Game {
 /** channelId -> Game */
 const games = new Map();
 
+/** channelId -> 順番待ちのクイズ（出題する順）。{ id, guildId, channelId, hostId, answer } */
+const queues = new Map();
+
 async function replyTemp(message, text, ms = 8000) {
   const m = await message.reply(text);
   setTimeout(() => m.delete().catch(() => {}), ms);
+}
+
+// ---------- 問題の投稿・順番待ち ----------
+/** 問題の埋め込みを作る */
+function buildQuizEmbed(game, fromQueue = false) {
+  const bonus =
+    game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
+  const embed = new EmbedBuilder()
+      .setColor("#673bb7")
+      .setDescription(
+        `# ${game.render()}\n` +
+          "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
+          `・正解時の得点 = 開いていない文字種の数（現在 **${game.hiddenCount()}** 種類）${bonus}\n` +
+          "・openした人は、他の人がopenするか1分経過するまで回答・openできません\n\n" +
+          "・正解が出ると出題者にも開いた文字種の数+不正解数の点数が、全文字が開くとその1.5倍(切り捨て)の点数が入ります\n" +
+          `出題者: <@${game.hostId}>`
+      );
+
+  if (fromQueue) {
+    embed.setTitle("▶ 順番待ちのクイズ");
+  }
+
+  return embed;
+}
+
+// 順番待ちの先頭のクイズを開始する。進行中のクイズがあれば何もしない。
+// クイズが終わったとき（正解・全文字オープン・強制終了）に呼ぶ。
+async function startNextFromQueue(ch) {
+  const queue = queues.get(ch.id);
+
+  while (queue && queue.length > 0 && !games.has(ch.id)) {
+    // 取り出しと開始の登録は、await の前に同期的に行う
+    const item = queue.shift();
+    const game = new Game(item.hostId, item.answer);
+    games.set(ch.id, game);
+
+    await removeQueuedDb(item.id);
+
+    try {
+      await ch.send({ embeds: [buildQuizEmbed(game, true)] });
+    } catch (error) {
+      // 投稿できなかった問題は取り消して、次の問題を試す
+      games.delete(ch.id);
+      await releaseSong(item.guildId, game.songKey());
+      console.error("queued quiz send failed:", error);
+      continue;
+    }
+
+    await saveGame(ch.id, game);
+    break;
+  }
+
+  if (queue && queue.length === 0) {
+    queues.delete(ch.id);
+  }
 }
 
 // ---------- /quiz ----------
@@ -366,23 +473,17 @@ async function startQuiz(interaction) {
     return;
   }
 
-  if (games.has(ch.id)) {
-    await interaction.editReply({
-      content: "このチャンネルではすでにクイズが進行中です。"
-    });
+  const answer = interaction.options.getString("answer").trim();
+  if (!answer) {
+    await interaction.editReply({ content: "問題を入力してください。" });
     return;
   }
 
-  const songname = interaction.options.getString("songname").trim();
-  if (!songname) {
-    await interaction.editReply({ content: "曲名を入力してください。" });
-    return;
-  }
-
-  const game = new Game(interaction.user.id, songname);
+  const game = new Game(interaction.user.id, answer);
   const guildId = interaction.guildId;
 
-  // 同じ曲名がすでに出題されていたら弾く（判定と登録を同時に行う）
+  // 同じ曲名がすでに出題されていたら弾く（判定と登録を同時に行う）。
+  // 順番待ちに入れる曲名も、ここで登録するので、同じ曲名は順番待ちにも入れられない。
   let claimed;
   try {
     claimed = await claimSong(guildId, game.songKey());
@@ -397,37 +498,62 @@ async function startQuiz(interaction) {
   if (!claimed) {
     await interaction.editReply({
       content:
-        "この曲名は、このサーバーですでに出題されています。別の曲名で出題してください。"
+        "この問題は、このチャンネルですでに出題されています。別の問題を出題してください。"
     });
     return;
   }
 
-  // 登録の待ち時間の間に、同じチャンネルで別の出題が始まっていないか、もう一度確認する
-  if (games.has(ch.id)) {
-    await releaseSong(guildId, game.songKey());
-    await interaction.editReply({
-      content: "このチャンネルではすでにクイズが進行中です。"
-    });
+  // 進行中のクイズがあるとき（または順番待ちが残っているとき）は、順番待ちに追加する
+  const queue = queues.get(ch.id) ?? [];
+  if (games.has(ch.id) || queue.length > 0) {
+    if (queue.length >= MAX_QUEUE_PER_CHANNEL) {
+      await releaseSong(guildId, game.songKey());
+      await interaction.editReply({
+        content:
+          `順番待ちがいっぱいです（最大${MAX_QUEUE_PER_CHANNEL}件）。クイズが進んでから、もう一度お試しください。`
+      });
+      return;
+    }
+
+    const item = {
+      id: randomUUID(),
+      guildId,
+      channelId: ch.id,
+      hostId: interaction.user.id,
+      answer: answer
+    };
+    queue.push(item); // 順番は、await の前に同期的に確定させる
+    queues.set(ch.id, queue);
+    const position = queue.length;
+
+    await addQueuedDb(item);
+
+    await interaction
+      .editReply({
+        content:
+          `進行中のクイズがあるため、順番待ちに追加しました（${position}番目）。\n` +
+          `答え: **${game.answer}**\n` +
+          "前のクイズが終わると、自動で出題が始まります。"
+      })
+      .catch(() => {});
+    await ch
+      .send({
+        content: `📥 ${interaction.user} がクイズを順番待ちに追加しました（現在 ${position} 件待ち）`,
+        allowedMentions: { parse: [] }
+      })
+      .catch(() => {});
+
+    // 進行中のクイズがなければ、そのまま開始する（再起動などで順番待ちだけが残っていた場合）
+    if (!games.has(ch.id)) {
+      await startNextFromQueue(ch);
+    }
     return;
   }
 
   games.set(ch.id, game); // 先に登録して、同時に2回出題されるのを防ぐ
 
-  const bonus =
-    game.multiplier() > 1 ? ` × ボーナス **${game.multiplier()}倍**` : "";
-  const embed = new EmbedBuilder()
-      .setColor("#673bb7")
-      .setDescription(
-        `# ${game.render()}\n` +
-          "`sg_答え` で回答 / `sg!open n` で n番の文字をオープン\n" +
-          `・正解時の得点 = 開いていない文字種の数（現在 **${game.hiddenCount()}** 種類）${bonus}\n` +
-          "・openした人は、他の人がopenするか1分経過するまで回答・openできません\n\n" +
-          "・正解が出ると出題者にも開いた文字種の数+不正解数の点数が、全文字が開くとその1.5倍(切り捨て)の点数が入ります\n" +
-          `出題者: ${interaction.user}`
-      );
-
   try {
-    await ch.send({ embeds: [embed] });
+    await ch.send({ embeds: [buildQuizEmbed(game)] });
   } catch (error) {
     games.delete(ch.id); // 投稿できなかった場合は、出題を取り消す
     await releaseSong(guildId, game.songKey()); // 出題していないので、曲名の登録も消す
@@ -499,8 +625,10 @@ async function endQuiz(interaction) {
   await interaction.editReply(
     `⚠️ 出題者の ${interaction.user} がクイズを強制終了しました。\n` +
       `正解は **${game.answer}** でした。\n` +
-      `ペナルティ: 出題者の得点から **-${FORCE_END_PENALTY}pt**（0未満にはなりません）`
+      `ペナルティ: 出題者の得点から **-${FORCE_END_PENALTY}pt**`
   );
+
+  await startNextFromQueue(ch);
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
@@ -596,6 +724,7 @@ async function handleQuizMessage(message) {
         `全ての文字が開きました。正解は: **${game.answer}**（正解者なし）\n` +
           `出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.hostPointsDetail()}）`
       );
+      await startNextFromQueue(message.channel);
       return;
     }
 
@@ -630,6 +759,7 @@ async function handleQuizMessage(message) {
           ? `\n出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.hostPointsDetail()}）`
           : "")
     );
+    await startNextFromQueue(message.channel);
   } else {
     game.wrongCount++;
     // 同時に正解が出てクイズが終わっていたら、保存し直さない
@@ -641,10 +771,29 @@ async function handleQuizMessage(message) {
 }
 
 // ---------- イベント ----------
-client.once("clientReady", () => {
+client.once("clientReady", async () => {
   console.log(
     `ログインしました。username=${client.user.username}, globalName=${client.user.globalName}, displayName=${client.user.displayName}`
   );
+
+  // 再起動の前に順番待ちが残っていて、進行中のクイズがないチャンネルは、次の問題を開始する
+  for (const channelId of [...queues.keys()]) {
+    if (games.has(channelId)) continue;
+
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+
+    if (ch) {
+      await startNextFromQueue(ch).catch(error => console.error(error));
+      continue;
+    }
+
+    // チャンネルが削除されているなど、投稿できない場合は、順番待ちを破棄する
+    for (const item of queues.get(channelId) ?? []) {
+      await removeQueuedDb(item.id);
+      await releaseSong(item.guildId, normText(item.answer));
+    }
+    queues.delete(channelId);
+  }
 });
 
 client.on("interactionCreate", async interaction => {
@@ -661,7 +810,7 @@ client.on("interactionCreate", async interaction => {
           name: "コマンド一覧",
           value: "\`/ping\` botの応答速度を計測します。\n" +
             "\`/help\` コマンド一覧を表示します。\n" + 
-            "`/quiz songname` クイズを開始（出題者用）\n" +
+            "`/quiz answer` クイズを開始（出題者用。進行中なら順番待ちに追加）\n" +
             "`/quizend` クイズを強制終了（出題者用・ペナルティあり）\n" +
             "`sg_答え` 答えを回答する\n" +
             "`sg!open n` n番の文字をオープンする\n" +
