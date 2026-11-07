@@ -22,7 +22,7 @@ const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> �
 const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の得点から引くポイント。0未満にはならない）
 const MAX_QUEUE_PER_CHANNEL = 10; // 1チャンネルあたりの、順番待ちの最大数
 
-console.log("songGuessNK v1.2.2");
+console.log("songGuessNK v1.3.0");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
