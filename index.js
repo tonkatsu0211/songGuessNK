@@ -20,9 +20,10 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const OPEN_LOCK_MS = 1 * 60 * 1000; // open後の制限時間（1分）
 const BONUS_MULTIPLIER = { 4: 3, 3: 4, 2: 6, 1: 10 }; // 曲名の文字数 -> 得点倍率
 const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の得点から引くポイント。0未満にはならない）
-const MAX_QUEUE_PER_CHANNEL = 10; // 1チャンネルあたりの、順番待ちの最大数
+const MAX_QUEUE_PER_CHANNEL = 5; // 1チャンネルあたりの、順番待ちの最大数
+const QUEUE_INTERVAL_MS = 10 * 1000; // 前のクイズが終わってから、順番待ちの次の問題が始まるまでの間隔（10秒）
 
-console.log("songGuessNK v1.3.0");
+console.log("songGuessNK v1.2.2");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
@@ -70,7 +71,7 @@ const quiz = new SlashCommandBuilder()
   .setDescription("曲名クイズを開始します")
   .addStringOption(option =>
     option
-      .setName("answer")
+      .setName("songname")
       .setDescription("出題する曲名")
       .setRequired(true)
   )
@@ -398,6 +399,9 @@ const games = new Map();
 /** channelId -> 順番待ちのクイズ（出題する順）。{ id, guildId, channelId, hostId, answer } */
 const queues = new Map();
 
+/** channelId -> 次の問題の開始を待っている状態。{ timer, startAt(ms) } */
+const pendingStarts = new Map();
+
 async function replyTemp(message, text, ms = 8000) {
   const m = await message.reply(text);
   setTimeout(() => m.delete().catch(() => {}), ms);
@@ -458,6 +462,34 @@ async function startNextFromQueue(ch) {
   }
 }
 
+// 順番待ちの次の問題を、インターバルを置いてから開始する。
+// 進行中のクイズがある・すでに待機中・順番待ちが空のときは、何もしない。
+function scheduleNextFromQueue(ch) {
+  const queue = queues.get(ch.id);
+
+  if (!queue || queue.length === 0) return;
+  if (games.has(ch.id) || pendingStarts.has(ch.id)) return;
+
+  const startAt = Date.now() + QUEUE_INTERVAL_MS;
+  const timer = setTimeout(async () => {
+    pendingStarts.delete(ch.id);
+
+    try {
+      await startNextFromQueue(ch);
+    } catch (error) {
+      console.error("startNextFromQueue failed:", error);
+    }
+  }, QUEUE_INTERVAL_MS);
+  pendingStarts.set(ch.id, { timer, startAt });
+
+  const seconds = Math.round(QUEUE_INTERVAL_MS / 1000);
+  ch.send({
+    content:
+      `⏳ 次のクイズ（出題者: <@${queue[0].hostId}>）は ${seconds}秒後に始まります。（順番待ち ${queue.length} 件）`,
+    allowedMentions: { parse: [] }
+  }).catch(() => {});
+}
+
 // ---------- /quiz ----------
 async function startQuiz(interaction) {
   const ch = interaction.channel;
@@ -473,13 +505,13 @@ async function startQuiz(interaction) {
     return;
   }
 
-  const answer = interaction.options.getString("answer").trim();
-  if (!answer) {
-    await interaction.editReply({ content: "問題を入力してください。" });
+  const songname = interaction.options.getString("songname").trim();
+  if (!songname) {
+    await interaction.editReply({ content: "曲名を入力してください。" });
     return;
   }
 
-  const game = new Game(interaction.user.id, answer);
+  const game = new Game(interaction.user.id, songname);
   const guildId = interaction.guildId;
 
   // 同じ曲名がすでに出題されていたら弾く（判定と登録を同時に行う）。
@@ -498,7 +530,7 @@ async function startQuiz(interaction) {
   if (!claimed) {
     await interaction.editReply({
       content:
-        "この問題は、このチャンネルですでに出題されています。別の問題を出題してください。"
+        "この曲名は、このサーバーですでに出題されています。別の曲名で出題してください。"
     });
     return;
   }
@@ -520,7 +552,7 @@ async function startQuiz(interaction) {
       guildId,
       channelId: ch.id,
       hostId: interaction.user.id,
-      answer: answer
+      answer: songname
     };
     queue.push(item); // 順番は、await の前に同期的に確定させる
     queues.set(ch.id, queue);
@@ -533,7 +565,7 @@ async function startQuiz(interaction) {
         content:
           `進行中のクイズがあるため、順番待ちに追加しました（${position}番目）。\n` +
           `答え: **${game.answer}**\n` +
-          "前のクイズが終わると、自動で出題が始まります。"
+          `前のクイズが終わって約 ${Math.round(QUEUE_INTERVAL_MS / 1000)} 秒後に、自動で出題が始まります。`
       })
       .catch(() => {});
     await ch
@@ -543,10 +575,8 @@ async function startQuiz(interaction) {
       })
       .catch(() => {});
 
-    // 進行中のクイズがなければ、そのまま開始する（再起動などで順番待ちだけが残っていた場合）
-    if (!games.has(ch.id)) {
-      await startNextFromQueue(ch);
-    }
+    // 進行中のクイズがなければ、順番待ちの先頭から始める（再起動などで順番待ちだけが残っていた場合）
+    scheduleNextFromQueue(ch);
     return;
   }
 
@@ -625,10 +655,10 @@ async function endQuiz(interaction) {
   await interaction.editReply(
     `⚠️ 出題者の ${interaction.user} がクイズを強制終了しました。\n` +
       `正解は **${game.answer}** でした。\n` +
-      `ペナルティ: 出題者の得点から **-${FORCE_END_PENALTY}pt**`
+      `ペナルティ: 出題者の得点から **-${FORCE_END_PENALTY}pt**（0未満にはなりません）`
   );
 
-  await startNextFromQueue(ch);
+  scheduleNextFromQueue(ch);
 }
 
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
@@ -664,6 +694,13 @@ async function handleQuizMessage(message) {
 
   const game = games.get(message.channel.id);
   if (!game) {
+    const pending = pendingStarts.get(message.channel.id);
+    if (pending) {
+      const seconds = Math.max(1, Math.ceil((pending.startAt - Date.now()) / 1000));
+      await replyTemp(message, `次のクイズは、約 ${seconds} 秒後に始まります。`, 5000);
+      return;
+    }
+
     await message.reply(
       "進行中のクイズはありません。`/quiz` で開始できます。"
     );
@@ -724,7 +761,7 @@ async function handleQuizMessage(message) {
         `全ての文字が開きました。正解は: **${game.answer}**（正解者なし）\n` +
           `出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.hostPointsDetail()}）`
       );
-      await startNextFromQueue(message.channel);
+      scheduleNextFromQueue(message.channel);
       return;
     }
 
@@ -759,7 +796,7 @@ async function handleQuizMessage(message) {
           ? `\n出題ポイント: <@${game.hostId}> **+${hostPts}pt**（${game.hostPointsDetail()}）`
           : "")
     );
-    await startNextFromQueue(message.channel);
+    scheduleNextFromQueue(message.channel);
   } else {
     game.wrongCount++;
     // 同時に正解が出てクイズが終わっていたら、保存し直さない
@@ -783,7 +820,7 @@ client.once("clientReady", async () => {
     const ch = await client.channels.fetch(channelId).catch(() => null);
 
     if (ch) {
-      await startNextFromQueue(ch).catch(error => console.error(error));
+      scheduleNextFromQueue(ch);
       continue;
     }
 
@@ -810,7 +847,7 @@ client.on("interactionCreate", async interaction => {
           name: "コマンド一覧",
           value: "\`/ping\` botの応答速度を計測します。\n" +
             "\`/help\` コマンド一覧を表示します。\n" + 
-            "`/quiz answer` クイズを開始（出題者用。進行中なら順番待ちに追加）\n" +
+            "`/quiz songname` クイズを開始（出題者用。進行中なら順番待ちに追加）\n" +
             "`/quizend` クイズを強制終了（出題者用・ペナルティあり）\n" +
             "`sg_答え` 答えを回答する\n" +
             "`sg!open n` n番の文字をオープンする\n" +
