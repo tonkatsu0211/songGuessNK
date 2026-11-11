@@ -23,7 +23,7 @@ const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の�
 const MAX_QUEUE_PER_CHANNEL = 5; // 1チャンネルあたりの、順番待ちの最大数
 const QUEUE_INTERVAL_MS = 10 * 1000; // 前のクイズが終わってから、順番待ちの次の問題が始まるまでの間隔（10秒）
 
-console.log("songGuessNK v1.2.2");
+console.log("songGuessNK v1.2.3");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
@@ -74,6 +74,7 @@ const quiz = new SlashCommandBuilder()
       .setName("songname")
       .setDescription("出題する曲名")
       .setRequired(true)
+      .setMaxLength(100)
   )
   .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
   .setContexts(InteractionContextType.Guild);
@@ -85,10 +86,17 @@ const quizend = new SlashCommandBuilder()
   .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
   .setContexts(InteractionContextType.Guild);
 
+// 自分が出題した問題（出題中・順番待ち）を確認するコマンド
+const quizcheck = new SlashCommandBuilder()
+  .setName("quizcheck")
+  .setDescription("自分が出題した問題（出題中・順番待ち）を確認します")
+  .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
+  .setContexts(InteractionContextType.Guild);
+
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 async function registerCommands() {
-  const body = [help.toJSON(), ping.toJSON(), quiz.toJSON(), quizend.toJSON()];
+  const body = [help.toJSON(), ping.toJSON(), quiz.toJSON(), quizend.toJSON(), quizcheck.toJSON()];
 
   if (GUILD_ID) {
     await rest.put(
@@ -661,6 +669,57 @@ async function endQuiz(interaction) {
   scheduleNextFromQueue(ch);
 }
 
+// ---------- /quizcheck（自分が出題した問題の確認） ----------
+// 答えが他の人に見えないよう、本人にだけ見える形で返信する。
+async function checkQuiz(interaction) {
+  const ch = interaction.channel;
+ 
+  if (!interaction.inGuild() || !ch) {
+    await interaction.reply({
+      content: "このコマンドはbotが参加しているサーバーのチャンネルで使用してください。",
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+ 
+  const userId = interaction.user.id;
+  const sections = [];
+ 
+  // 出題中の問題（自分が出題者のときだけ）
+  const game = games.get(ch.id);
+  if (game && game.hostId === userId) {
+    sections.push(
+      "**出題中**\n" +
+        `答え: **${game.answer}**\n` +
+        `表示: ${game.render()}\n` +
+        `開いた文字: ${game.openedCount()}/${game.labels.size} 種類 / 不正解: ${game.wrongCount} 回\n` +
+        `現在の正解得点: ${game.points()}pt`
+    );
+  }
+ 
+  // 順番待ちの問題（自分が出題したもの。順番つき）
+  const queue = queues.get(ch.id) ?? [];
+  const mine = queue
+    .map((item, index) => ({ item, position: index + 1 }))
+    .filter(({ item }) => item.hostId === userId);
+ 
+  if (mine.length > 0) {
+    sections.push(
+      "**順番待ち**\n" +
+        mine.map(({ item, position }) => `${position}番目: **${item.answer}**`).join("\n") +
+        `\n（このチャンネルの順番待ち: 全 ${queue.length} 件）`
+    );
+  }
+ 
+  await interaction.reply({
+    content:
+      sections.length > 0
+        ? sections.join("\n\n")
+        : "このチャンネルで、あなたが出題した問題（出題中・順番待ち）はありません。",
+    flags: MessageFlags.Ephemeral
+  });
+}
+
 // ---------- クイズのメッセージ処理 (sg_ / sg!open / sg!leaderboard) ----------
 async function handleQuizMessage(message) {
   const content = message.content.trim();
@@ -849,6 +908,7 @@ client.on("interactionCreate", async interaction => {
             "\`/help\` コマンド一覧を表示します。\n" + 
             "`/quiz songname` クイズを開始（出題者用。進行中なら順番待ちに追加）\n" +
             "`/quizend` クイズを強制終了（出題者用・ペナルティあり）\n" +
+            "`/quizcheck` 自分が出題した問題を確認\n" +
             "`sg_答え` 答えを回答する\n" +
             "`sg!open n` n番の文字をオープンする\n" +
             "`sg!leaderboard` ランキングを表示",
@@ -869,6 +929,9 @@ client.on("interactionCreate", async interaction => {
     await startQuiz(interaction);
   } else if (interaction.commandName === "quizend") {
     await endQuiz(interaction);
+  } else if (interaction.commandName === "quizcheck") {
+    await checkQuiz(interaction);
+  } else {
   } else {
     return;
   }
