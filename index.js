@@ -932,7 +932,6 @@ client.on("interactionCreate", async interaction => {
   } else if (interaction.commandName === "quizcheck") {
     await checkQuiz(interaction);
   } else {
-  } else {
     return;
   }
 });
