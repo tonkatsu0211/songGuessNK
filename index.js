@@ -23,7 +23,7 @@ const FORCE_END_PENALTY = 10; // 強制終了のペナルティ（出題者の�
 const MAX_QUEUE_PER_CHANNEL = 5; // 1チャンネルあたりの、順番待ちの最大数
 const QUEUE_INTERVAL_MS = 10 * 1000; // 前のクイズが終わってから、順番待ちの次の問題が始まるまでの間隔（10秒）
 
-console.log("songGuessNK v1.2.3");
+console.log("songGuessNK v1.2.4");
 
 if (!TOKEN || !CLIENT_ID || !DATABASE_URL) {
   throw new Error(
@@ -744,6 +744,22 @@ async function handleQuizMessage(message) {
 
   if (content === "sg!fuck") {
     await message.react("<:crying_uyuyu:1565519672864932021>").catch(() => {});
+    return;
+  }
+
+  if (content === "sg!time") {
+    const remain = game.lockRemaining(message.author.id);
+    if (remain > 0) {
+      const m = Math.floor(remain / 60);
+      const s = String(remain % 60).padStart(2, "0");
+      await message.reply(
+        `クールタイムは残り約 ${m}分${s}秒 です。`
+      );
+    } else {
+      await message.reply(
+        `クールタイム経過済みです。回答・openが可能です。`
+      );
+    }
     return;
   }
 
