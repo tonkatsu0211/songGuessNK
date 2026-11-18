@@ -747,7 +747,28 @@ async function handleQuizMessage(message) {
     return;
   }
 
-  if (content === "sg!time") {
+  const isAnswer = content.startsWith("sg_");
+  const isOpen = content === "sg!open" || content.startsWith("sg!open ");
+  const isTime = content === "sg!time";
+  if (!isAnswer && !isOpen && !isTime) return;
+
+  const game = games.get(message.channel.id);
+
+  if (!game) {
+    const pending = pendingStarts.get(message.channel.id);
+    if (pending) {
+      const seconds = Math.max(1, Math.ceil((pending.startAt - Date.now()) / 1000));
+      await replyTemp(message, `次のクイズは、約 ${seconds} 秒後に始まります。`, 5000);
+      return;
+    }
+
+    await message.reply(
+      "進行中のクイズはありません。`/quiz` で開始できます。"
+    );
+    return;
+  }
+  
+  if (isTime) {
     const remain = game.lockRemaining(message.author.id);
     if (remain > 0) {
       const m = Math.floor(remain / 60);
@@ -760,25 +781,6 @@ async function handleQuizMessage(message) {
         `クールタイム経過済みです。回答・openが可能です。`
       );
     }
-    return;
-  }
-
-  const isAnswer = content.startsWith("sg_");
-  const isOpen = content === "sg!open" || content.startsWith("sg!open ");
-  if (!isAnswer && !isOpen) return;
-
-  const game = games.get(message.channel.id);
-  if (!game) {
-    const pending = pendingStarts.get(message.channel.id);
-    if (pending) {
-      const seconds = Math.max(1, Math.ceil((pending.startAt - Date.now()) / 1000));
-      await replyTemp(message, `次のクイズは、約 ${seconds} 秒後に始まります。`, 5000);
-      return;
-    }
-
-    await message.reply(
-      "進行中のクイズはありません。`/quiz` で開始できます。"
-    );
     return;
   }
 
